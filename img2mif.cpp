@@ -19,6 +19,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "stdlib.h"
+#include "limits.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -29,7 +30,7 @@ int comp;
 int convert2bw;
 int bitwidth; 
 int memdepth;
-int bbp;
+int bpp;
 
 unsigned char *data;
 
@@ -52,9 +53,9 @@ int main(int argc, char* argv[])
 	if (argc != 6)
 	{
 		printf("\nInvalid arguements.");
-		printf("\nUSAGE: img2mif -width -depth -bpp -color");
+		printf("\nUSAGE: img2mif imagename width depth bpp color");
 		printf("\n");
-		printf("\n-width : Width of memory in bits. Only support for 8, 16, 32, 64, 128 at the moment.\n-depth : Depth of the memory structure. Only valid choices are 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288.\n-bpp : Bits per pixel of the output. Uses basic thresholding to truncate image data.\n-color: Set to 0 for auto RGB output. Set to 1 for Grayscale.");
+		printf("\nwidth : Width of memory in bits. Only support for 8, 16, 32, 64, 128 at the moment.\ndepth : Depth of the memory structure. Only valid choices are 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288.\nbpp : Bits per pixel of the output. Uses basic thresholding to truncate image data.\ncolor: Set to 0 for auto RGB output. Set to 1 for Grayscale.");
 		printf("\n");
 		printf("\nEX : img2mif tester.bmp 8 8192 2 1");
 		printf("\n");
@@ -75,7 +76,7 @@ int main(int argc, char* argv[])
 	
 	bitwidth = atoi(argv[2]);
 	memdepth = atoi(argv[3]);
-	bbp = atoi(argv[4]);
+	bpp = atoi(argv[4]);
 	convert2bw = atoi(argv[5]);
 
 	//Scrub inputs. 
@@ -132,19 +133,72 @@ int main(int argc, char* argv[])
 	//Color
 	if (convert2bw == 0)
 	{
-		printf("\nRGB IS NOT SUPPORTED YET!");
+		// for now, only support straight 24-bit RGB
+		if (bpp != 24)
+		{
+			printf("\nSupport only for 24bit RGB. Changing bits per pixel to 24.");
+			bpp = 24;
+		}
+		// pack alternating RGB bytes into whatever the bitwidth is.
+		if (((bitwidth/8)*memdepth) < (x*y*(bpp/8)))
+		{
+			printf("\nWARNING: Not enough memory. Memory Size is %d*%d=%d bytes. Need %d. Continuing...", bitwidth/8, memdepth, (bitwidth/8)*memdepth, x*y*(bpp/8));		
+		}
+		int imgidx = 0;	// index into the image data. will be incremented according to #components in image.
+		int compidx = 0; // indicator of which component we are at. only used for 3 and 4 component images
+		for (i=0; i<memdepth; i++)	// i is the memory depth counter
+		{
+			fprintf(fo, "%02d\t:\t", i);
+			for (j=0; j<bitwidth/8; j++)	// j is the memory width byte counter
+			{
+				if (((i*bitwidth/8)+j) < (x*y*comp))	// still have image data
+				{
+					fprintf(fo, "%02X", data[imgidx]);
+					if ((comp == 1) || (comp == 3))	// original image is greyscale or rgb, no channels to be skipped
+					{
+						imgidx++;
+					}
+					else if (comp == 2)	// original image is greyscale plus alpha
+					{
+						imgidx += 2;	// skip the alpha channel
+					}
+					else if (comp == 4)	// original image is rgba
+					{
+						if (compidx <= 1)
+						{
+							imgidx++;
+							compidx++;
+						}
+						else
+						{
+							imgidx += 2;	// skip the alpha channel
+							compidx = 0;
+						}
+					}
+					else
+					{
+						printf("\nError! Input image should not have more than 4 components; %d reported\n", comp);
+					}
+				}
+				else	// pad with zeros
+				{
+					fprintf(fo, "00");
+				}
+			}
+			fprintf(fo, ";\n");
+		}
 	}
 	//Grayscale
 	else
 	{	
 		//Only support for 8bit Grayscale output. 
-		if (bbp > 8)
+		if (bpp > 8)
 		{
 			printf("\nSupport only for 8bit Grayscale MAX. Changing bits per pixel to 8.");
-			bbp = 8;
+			bpp = 8;
 		}
 		//No truncation. Bitwidths the same.
-		if (bitwidth == bbp)
+		if (bitwidth == bpp)
 		{
 			if (memdepth < x*y)
 			{
@@ -160,16 +214,16 @@ int main(int argc, char* argv[])
 				fprintf(fo, "[%d..%d]\t:\t00\t;\n", i + 1, memdepth);
 			}
 		}
-		else if (bitwidth % bbp != 0)
+		else if (bitwidth % bpp != 0)
 		{
 			printf("\nUneven pixels per memory location. Will leave uninitialized bits to 0.");
-			printf("\nTruncating image from 8bit Grayscale to %dbit Grayscale...", bbp);
+			printf("\nTruncating image from 8bit Grayscale to %dbit Grayscale...", bpp);
 			printf("\nNOT SUPPORTED YET!");
 		}
 		//Truncate images through thresholding. 
 		else
 		{
-			printf("\nTruncating image from 8bit Grayscale to %dbit Grayscale...", bbp);
+			printf("\nTruncating image from 8bit Grayscale to %dbit Grayscale...", bpp);
 
 			//Fine Max and Min values to set up threshold values. 
 			max_value = INT_MIN;
@@ -190,24 +244,24 @@ int main(int argc, char* argv[])
 			printf("\nMax Value: %02X Min Value: %02X", max_value, min_value);
 
 			//diff value is spacing between threshold levels. 
-			diff = (max_value - min_value) / (pow(double (2),bbp));
+			diff = (max_value - min_value) / (pow(double (2),bpp));
 
 			//Check to see if there is enough memory to load the entire image. If not throw a warning and fill as much as we can. 
-			if (memdepth < (x*y) / (bitwidth / bbp))
+			if (memdepth < (x*y) / (bitwidth / bpp))
 			{
-				printf("\nWARNING: Not enough memory. Memory Depth is %d. Need %d. Continuing...", memdepth, (x*y) / (bitwidth / bbp));
+				printf("\nWARNING: Not enough memory. Memory Depth is %d. Need %d. Continuing...", memdepth, (x*y) / (bitwidth / bpp));
 			}
 			//1 bit per pixel. Super Thresholding!
-			if (bbp == 1)
+			if (bpp == 1)
 			{
 				j = 0;
 				k = 0;
 				m = 0;
-				for (i = 0; i < x*y; i = i + (bitwidth / bbp))
+				for (i = 0; i < x*y; i = i + (bitwidth / bpp))
 				{
 					fprintf(fo, "%d\t:\t", k);
 					bytebuilder = 0;
-					for (j = 0; j < bitwidth / bbp; j++)
+					for (j = 0; j < bitwidth / bpp; j++)
 					{
 						if (data[j + i] >(max_value - diff))
 						{
@@ -228,16 +282,16 @@ int main(int argc, char* argv[])
 				}
 			}
 			//2 bits per pixel.
-			else if (bbp == 2)
+			else if (bpp == 2)
 			{
 				j = 0;
 				k = 0;
 				m = 0;
-				for (i = 0; i < x*y; i = i + (bitwidth / bbp))
+				for (i = 0; i < x*y; i = i + (bitwidth / bpp))
 				{
 					fprintf(fo, "%d\t:\t", k);
 					bytebuilder = 0;
-					for (j = 0; j < bitwidth / bbp; j++)
+					for (j = 0; j < bitwidth / bpp; j++)
 					{
 						if (data[j + i] >(max_value - diff))
 						{
@@ -266,17 +320,17 @@ int main(int argc, char* argv[])
 				}
 			}
 			//4 bits per pixel.
-			else if (bbp == 4)
+			else if (bpp == 4)
 			{
 				printf("\nBits per pixel = 4 untested!");
 				j = 0;
 				k = 0;
 				m = 0;
-				for (i = 0; i < x*y; i = i + (bitwidth / bbp))
+				for (i = 0; i < x*y; i = i + (bitwidth / bpp))
 				{
 					fprintf(fo, "%d\t:\t", k);
 					bytebuilder = 0;
-					for (j = 0; j < bitwidth / bbp; j++)
+					for (j = 0; j < bitwidth / bpp; j++)
 					{
 						if (data[j + i] > (max_value - diff))
 						{
@@ -353,16 +407,16 @@ int main(int argc, char* argv[])
 				}
 			}
 			//8 bits per pixel. This happens if there are multiple 8bit pixels per memory address. 
-			else if (bbp == 8)
+			else if (bpp == 8)
 			{
 				printf("\nBits per pixel = 8 untested!");
 				j = 0;
 				k = 0;
 				m = 0;
-				for (i = 0; i < x*y; i = i + (bitwidth / bbp))
+				for (i = 0; i < x*y; i = i + (bitwidth / bpp))
 				{
 					fprintf(fo, "%d\t:\t", k);
-					for (j = 0; j < bitwidth / bbp; j++)
+					for (j = 0; j < bitwidth / bpp; j++)
 					{
 						fprintf(fo, "%02X", data[i+j]);
 					}
